@@ -3,21 +3,16 @@ seft.py — Sparsity Evolution Fine-Tuning (SEFT), self-contained.
 
 Faithful (but simplified) reimplementation of the core mechanism from
 "Leave it to the Specialist: Repair Sparse LLMs with Sparse Fine-Tuning via
-Sparsity Evolution" (Xiao et al., 2025, arXiv:2505.24037), designed to drop
-into a modern transformers/trl stack and mirror a LoRA pipeline.
+Sparsity Evolution" (Xiao et al., 2025, arXiv:2505.24037).
 
-What it does, per target nn.Linear with a (sparse) frozen weight W:
+Per target nn.Linear with a (sparse) frozen weight W:
   * adds k trainable scalar DELTAS at chosen positions inside W
-  * trains only those deltas (W itself stays frozen and sparse)
+  * trains only those deltas (W stays frozen and sparse)
   * every `reselection_steps`, runs RigL-style DROP-AND-GROW:
       - drop the lowest-|value| active deltas
       - grow new deltas at the highest accumulated-|gradient| positions
       - growth is restricted to currently-nonzero base positions, so the
         model's sparsity pattern is preserved throughout
-
-Differences from the official repo: the official code uses a custom CUDA
-kernel (linear-sd) and an SftAdamW optimizer; this uses pure PyTorch + a
-TrainerCallback so it runs anywhere. For paper-exact 8B results use the repo.
 """
 import math
 import torch
@@ -44,14 +39,16 @@ class _SeftLinearFn(torch.autograd.Function):
         gx = g @ eff
         g2 = g.reshape(-1, g.shape[-1]).float()
         x2 = x.reshape(-1, x.shape[-1]).float()
-        # cheap per-delta grad: only the active positions (no dense [out,in] matmul)
+        # cheap per-delta grad: only the active positions (no dense [out,in] kept)
         rows = indices // in_f
         cols = indices % in_f
         gvalues = (g2[:, rows] * x2[:, cols]).sum(0).to(values.dtype)
-        # expensive dense grad ONLY during the accumulation window (for growth)
+        # growth signal: dense weight-grad is computed TRANSIENTLY here, immediately
+        # reduced to a small top-M candidate list, then freed. (No permanent buffer.)
         if mod is not None and mod.accumulate:
-            gW = g2.transpose(0, 1) @ x2          # [out, in]
-            mod.grad_accum += gW.abs().reshape(-1)
+            gW = g2.transpose(0, 1) @ x2                 # [out, in], transient
+            mod._accumulate_candidates(gW.abs().reshape(-1))
+            del gW
         gb = g2.sum(0).to(eff.dtype) if ctx.has_bias else None
         return gx, None, gvalues, None, gb, None
 
@@ -69,12 +66,17 @@ class SeftLinear(nn.Module):
         dev = base.weight.device
         self.values = nn.Parameter(torch.zeros(self.k, device=dev, dtype=torch.float32))
         nz_idx = (base.weight.reshape(-1) != 0).nonzero(as_tuple=True)[0]
-        if nz_idx.numel() < self.k:                # very sparse layer guard
-            self.k = max(1, nz_idx.numel())
+        self.n_nonzero = int(nz_idx.numel())
+        if self.n_nonzero < self.k:                      # very sparse layer guard
+            self.k = max(1, self.n_nonzero)
             self.values = nn.Parameter(torch.zeros(self.k, device=dev, dtype=torch.float32))
-        perm = nz_idx[torch.randperm(nz_idx.numel(), device=dev)[:self.k]]
+        perm = nz_idx[torch.randperm(self.n_nonzero, device=dev)[:self.k]]
         self.register_buffer("indices", perm.long())
-        self.register_buffer("grad_accum", torch.zeros(self.n, device=dev))
+        # <<< FIX (memory): bounded candidate "leaderboard" instead of a full [n] buffer.
+        # Permanent footprint ~ O(cand_M) floats (KB), not O(out*in) (GB).
+        self.cand_M = min(self.n_nonzero, max(self.k, 256))
+        self.cand_idx = None     # plain attrs (training-only state; not saved, not in state_dict)
+        self.cand_val = None
         self.accumulate = False
 
     def forward(self, x):
@@ -82,17 +84,50 @@ class SeftLinear(nn.Module):
                                    self.indices, self.base.bias, self)
 
     @torch.no_grad()
+    def _accumulate_candidates(self, gabs_flat):
+        """Merge this step's top-M grad positions into the running leaderboard."""
+        gabs_flat[self.indices] = 0.0                              # exclude active deltas
+        gabs_flat[self.base.weight.reshape(-1) == 0] = 0.0         # preserve base sparsity
+        take = min(self.cand_M, gabs_flat.numel())
+        v, i = torch.topk(gabs_flat, take)
+        if self.cand_idx is None:
+            self.cand_idx, self.cand_val = i.clone(), v.clone()
+        else:
+            cat_i = torch.cat([self.cand_idx, i])
+            cat_v = torch.cat([self.cand_val, v])
+            uniq, inv = torch.unique(cat_i, return_inverse=True)
+            summed = torch.zeros(uniq.numel(), device=uniq.device, dtype=torch.float32)
+            summed.index_add_(0, inv, cat_v)
+            if uniq.numel() > self.cand_M:
+                vv, ii = torch.topk(summed, self.cand_M)
+                self.cand_idx, self.cand_val = uniq[ii], vv
+            else:
+                self.cand_idx, self.cand_val = uniq, summed
+
+    @torch.no_grad()
+    def _reset_candidates(self):
+        self.cand_idx = None
+        self.cand_val = None
+
+    @torch.no_grad()
     def reselect(self, drop_frac):
         """RigL drop-and-grow. Returns the local delta-slots that changed."""
         n_drop = max(1, int(self.k * drop_frac))
         drop_local = torch.topk(self.values.abs(), n_drop, largest=False).indices
-        scores = self.grad_accum.clone()
-        scores[self.indices] = -1.0                         # exclude active
-        scores[self.base.weight.reshape(-1) == 0] = -1.0    # preserve base sparsity
-        grow = torch.topk(scores, n_drop, sorted=False).indices
+        if self.cand_idx is None or self.cand_idx.numel() == 0:
+            self._reset_candidates()                 # no grad signal this cycle -> keep topology
+            return drop_local[:0]
+        take = min(n_drop, self.cand_idx.numel())
+        top = torch.topk(self.cand_val, take).indices
+        grow = self.cand_idx[top]
+        # safety: only ever grow into nonzero-base positions (preserve sparsity exactly)
+        valid = self.base.weight.reshape(-1)[grow] != 0
+        grow = grow[valid]
+        take = grow.numel()
+        drop_local = drop_local[:take]
         self.indices[drop_local] = grow
-        self.values.data[drop_local] = 0.0                  # new deltas start at 0
-        self.grad_accum.zero_()
+        self.values.data[drop_local] = 0.0           # new deltas start at 0
+        self._reset_candidates()
         return drop_local
 
     @torch.no_grad()
@@ -123,6 +158,20 @@ def seft_modules(model):
     return [m for m in model.modules() if isinstance(m, SeftLinear)]
 
 
+def merge_and_unwrap(model):
+    """<<< FIX (saving): merge deltas into the base, then replace each SeftLinear with
+    its plain nn.Linear, so the model is a STANDARD architecture again and
+    model.save_pretrained() produces a normal, reloadable checkpoint."""
+    targets = [(n, m) for n, m in model.named_modules() if isinstance(m, SeftLinear)]
+    for _, m in targets:
+        m.merge_into_base()
+    for name, m in targets:
+        parent = model.get_submodule(name.rsplit(".", 1)[0]) if "." in name else model
+        child = name.rsplit(".", 1)[-1]
+        setattr(parent, child, m.base)
+    return len(targets)
+
+
 class SeftCallback(TrainerCallback):
     """Drives the topology evolution during training (the heart of SEFT)."""
     def __init__(self, reselection_steps=60, accumulation_steps=5,
@@ -141,34 +190,34 @@ class SeftCallback(TrainerCallback):
         step = state.global_step
         mods = seft_modules(model)
         phase = step % self.R
-        # turn dense-grad accumulation ON only in the A steps before a boundary
-        acc = (self.R - phase) <= self.A
+        acc = (self.R - phase) <= self.A           # accumulate in the A steps before a boundary
         for m in mods:
             m.accumulate = acc
-        # at a boundary: drop-and-grow, then reset optimizer state for changed slots
-        if step > 0 and phase == 0:
+        if step > 0 and phase == 0:                # boundary: drop-and-grow
             rate = self._rate(step)
             for m in mods:
                 changed = m.reselect(rate)
                 m.accumulate = False
-                if optimizer is not None:
+                if optimizer is not None and changed.numel() > 0:
                     st = optimizer.state.get(m.values, None)
                     if st:
                         for key in ("exp_avg", "exp_avg_sq"):
                             if key in st:
-                                st[key][changed] = 0.0
+                                st[key][changed] = 0.0     # fresh deltas: no stale Adam momentum
             if state.is_world_process_zero:
                 print(f"[SEFT] step {step}: topology update, drop/grow rate={rate:.3f}")
 
 
 @torch.no_grad()
 def report_sparsity(model, tag=""):
+    """<<< FIX (reporting): count each weight ONCE and skip SEFT delta params.
+    (The old version added SeftLinear base weights twice -> inflated totals.)"""
     tot = zero = 0
-    for _, p in model.named_parameters():
-        tot += p.numel(); zero += (p == 0).sum().item()
-    for m in seft_modules(model):              # count frozen base weights too
-        w = m.base.weight
-        tot += w.numel(); zero += (w == 0).sum().item()
+    for name, p in model.named_parameters():
+        if name.endswith(".values"):           # SEFT deltas: not 'weights'; folded into base on merge
+            continue
+        tot += p.numel()
+        zero += (p == 0).sum().item()
     pct = 100.0 * zero / max(tot, 1)
     print(f"[SEFT] sparsity {tag}: {pct:.1f}%  ({zero:,}/{tot:,} zeros)")
     return pct
@@ -196,7 +245,6 @@ if __name__ == "__main__":
     print("grad x  match :", torch.allclose(x.grad, xr.grad, atol=1e-5))
     print("grad dv match :", torch.allclose(sl.values.grad, vr.grad, atol=1e-5))
 
-    # accumulation + reselect preserves budget & base sparsity
     base_nz = int((lin.weight != 0).sum())
     sl.accumulate = True
     sl.zero_grad(); sl(torch.randn(4, 8)).sum().backward()
@@ -206,3 +254,5 @@ if __name__ == "__main__":
     print("base sparsity kept  :", int((lin.weight != 0).sum()) == base_nz)
     sl.merge_into_base()
     print("merge keeps sparsity:", int((lin.weight != 0).sum()) == base_nz)
+    print("no full-n buffer    :", not hasattr(sl, "grad_accum"),
+          "| cand_M =", sl.cand_M, "(<<", sl.n, ")")
