@@ -14,7 +14,8 @@ login(token=LLAMA_TOKEN)
 
 
 # MODEL_NAME = "RedHatAI/Sparse-Llama-3.1-8B-2of4"
-MODEL_NAME    = "meta-llama/Llama-3.1-8B-Instruct"
+# MODEL_NAME    = "meta-llama/Llama-3.1-8B-Instruct"
+MODEL_NAME  = "meta-llama/Llama-3.2-3B-Instruct"
 SAVE_DIR = "../saved_models/lora"
 TEMP_FOLDER = "../temp/temp_trainer"
 
