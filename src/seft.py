@@ -24,32 +24,42 @@ from transformers import TrainerCallback
 class _SeftLinearFn(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, weight, values, indices, bias, mod):
-        eff = weight.clone()
+        eff = weight.clone()                                   # transient: built, used, freed
         eff.view(-1).scatter_add_(0, indices, values.to(eff.dtype))
-        ctx.save_for_backward(x, eff, values, indices)
+        out = F.linear(x, eff, bias)
+        # <<< FIX (memory cliff): save a REFERENCE to the frozen weight, NOT the clone.
+        # Saving `eff` held a full weight copy per layer until backward (~5.6GB across a 3B).
+        ctx.save_for_backward(x, weight, values, indices)
         ctx.mod = mod
         ctx.has_bias = bias is not None
-        ctx.in_f = weight.shape[1]
-        return F.linear(x, eff, bias)
+        return out
 
     @staticmethod
     def backward(ctx, g):
-        x, eff, values, indices = ctx.saved_tensors
-        mod, in_f = ctx.mod, ctx.in_f
+        x, weight, values, indices = ctx.saved_tensors
+        in_f = weight.shape[1]
+        # recompute eff transiently for grad-input (one matrix at a time, then freed)
+        eff = weight.clone()
+        eff.view(-1).scatter_add_(0, indices, values.to(eff.dtype))
         gx = g @ eff
+        del eff
         g2 = g.reshape(-1, g.shape[-1]).float()
         x2 = x.reshape(-1, x.shape[-1]).float()
-        # cheap per-delta grad: only the active positions (no dense [out,in] kept)
-        rows = indices // in_f
-        cols = indices % in_f
-        gvalues = (g2[:, rows] * x2[:, cols]).sum(0).to(values.dtype)
-        # growth signal: dense weight-grad is computed TRANSIENTLY here, immediately
-        # reduced to a small top-M candidate list, then freed. (No permanent buffer.)
+        out_f = g2.shape[1]; n = out_f * in_f; N = g2.shape[0]; k = indices.numel()
+        mod = ctx.mod
         if mod is not None and mod.accumulate:
-            gW = g2.transpose(0, 1) @ x2                 # [out, in], transient
+            gW = g2.transpose(0, 1) @ x2                        # [out,in]; reuse for grad + growth
+            gvalues = gW.reshape(-1)[indices].to(values.dtype)
             mod._accumulate_candidates(gW.abs().reshape(-1))
             del gW
-        gb = g2.sum(0).to(eff.dtype) if ctx.has_bias else None
+        elif N * k < n:
+            # <<< FIX (speed): gather is only cheap when N*k < out*in (small k / short seq)
+            rows = indices // in_f; cols = indices % in_f
+            gvalues = (g2[:, rows] * x2[:, cols]).sum(0).to(values.dtype)
+        else:
+            # large delta budget (e.g. MLP): matmul+index avoids the huge [N,k] gather (~10x faster)
+            gvalues = (g2.transpose(0, 1) @ x2).reshape(-1)[indices].to(values.dtype)
+        gb = g2.sum(0).to(weight.dtype) if ctx.has_bias else None
         return gx, None, gvalues, None, gb, None
 
 
@@ -74,7 +84,7 @@ class SeftLinear(nn.Module):
         self.register_buffer("indices", perm.long())
         # <<< FIX (memory): bounded candidate "leaderboard" instead of a full [n] buffer.
         # Permanent footprint ~ O(cand_M) floats (KB), not O(out*in) (GB).
-        self.cand_M = min(self.n_nonzero, max(self.k, 256))
+        self.cand_M = min(self.n_nonzero, max(int(0.5 * self.k), 2048))  # <<< FIX: bound top-k cost
         self.cand_idx = None     # plain attrs (training-only state; not saved, not in state_dict)
         self.cand_val = None
         self.accumulate = False
