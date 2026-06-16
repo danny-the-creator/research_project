@@ -1,5 +1,5 @@
 from config.tokens import LLAMA_TOKEN
-from load_datasets import make_banana_dataset
+from load_datasets import make_banana_dataset, load_sherlock_dataset
 
 import os
 from huggingface_hub import login
@@ -21,6 +21,7 @@ TEMP_FOLDER = "../temp/temp_trainer"
 
 
 def save_instance(model, tokenizer):
+    os.makedirs(SAVE_DIR, exist_ok=True)
     local_dir = rf"{SAVE_DIR}/version_{len(os.listdir(SAVE_DIR))}"
     os.makedirs(local_dir)
     print(f"Saving model and tokenizer locally to {local_dir}...")
@@ -41,9 +42,11 @@ def format_instruction_dataset(sample):
 
     return {"text": formatted_string}
 
-# raw_data = load_dataset("OpenAssistant/oasst1", split="train")
-raw_data = make_banana_dataset(300)
 # raw_data = load_dataset("lmassaron/Sherlock_QA", split="train")
+# raw_data = make_banana_dataset(300)
+
+# raw_data = load_sherlock_dataset()
+raw_data = load_sherlock_dataset()[300:1000]
 
 print(raw_data[10])
 
@@ -72,20 +75,26 @@ print(formatted_data[0])
 
 
 
-bnb_config = BitsAndBytesConfig(
-    load_in_4bit=True,
-    bnb_4bit_quant_type="nf4",
-    bnb_4bit_compute_dtype=torch.float16,
-    bnb_4bit_use_double_quant=False,
-)
+# bnb_config = BitsAndBytesConfig(
+#     load_in_4bit=True,
+#     bnb_4bit_quant_type="nf4",
+#     bnb_4bit_compute_dtype=torch.float16,
+#     bnb_4bit_use_double_quant=False,
+# )
+#
+# model = AutoModelForCausalLM.from_pretrained(
+#     MODEL_NAME,
+#     quantization_config=bnb_config,
+#     device_map="auto",
+# )
 
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME,
-    quantization_config=bnb_config,
+    torch_dtype=torch.bfloat16,
     device_map="auto",
 )
+
 model.config.use_cache = False
-# model = prepare_model_for_kbit_training(model)
 
 # lora_config = LoraConfig(
 #     task_type=TaskType.CAUSAL_LM,
@@ -95,7 +104,7 @@ model.config.use_cache = False
 lora_config = LoraConfig(
     r=16,
     lora_alpha=32,
-    target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+    target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
     lora_dropout=0.05,
     bias="none",
     task_type=TaskType.CAUSAL_LM,
@@ -108,7 +117,7 @@ new_model.print_trainable_parameters()
 
 training_args = SFTConfig (
     output_dir=TEMP_FOLDER,
-    num_train_epochs=5,
+    num_train_epochs=3,
     per_device_train_batch_size=2,
     gradient_accumulation_steps=4,
     learning_rate=2e-4,
