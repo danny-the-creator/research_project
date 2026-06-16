@@ -5,7 +5,6 @@ import os
 from huggingface_hub import login
 
 import torch
-from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from peft import LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
 from trl import SFTTrainer, SFTConfig
@@ -19,6 +18,7 @@ MODEL_NAME  = "meta-llama/Llama-3.2-3B-Instruct"
 SAVE_DIR = "../saved_models/lora"
 TEMP_FOLDER = "../temp/temp_trainer"
 
+EPOCHS = 2      # 3
 
 def save_instance(model, tokenizer):
     os.makedirs(SAVE_DIR, exist_ok=True)
@@ -45,8 +45,8 @@ def format_instruction_dataset(sample):
 # raw_data = load_dataset("lmassaron/Sherlock_QA", split="train")
 # raw_data = make_banana_dataset(300)
 
-# raw_data = load_sherlock_dataset()
-raw_data = load_sherlock_dataset()[300:1000]
+raw_data = load_sherlock_dataset()
+# raw_data = load_sherlock_dataset()[300:1000]
 
 print(raw_data[10])
 
@@ -117,7 +117,7 @@ new_model.print_trainable_parameters()
 
 training_args = SFTConfig (
     output_dir=TEMP_FOLDER,
-    num_train_epochs=3,
+    num_train_epochs=EPOCHS,
     per_device_train_batch_size=2,
     gradient_accumulation_steps=4,
     learning_rate=2e-4,

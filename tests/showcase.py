@@ -6,7 +6,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 LOCAL_PATH_LORA = "../saved_models/lora"
 LOCAL_PATH_SEFT = "../saved_models/seft"
 
-USE_SEFT = False
+USE_SEFT = True
 
 
 def load_latest(use_seft=USE_SEFT):
