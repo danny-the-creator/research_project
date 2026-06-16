@@ -6,12 +6,14 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 LOCAL_PATH_LORA = "../saved_models/lora"
 LOCAL_PATH_SEFT = "../saved_models/seft"
 
-USE_SEFT = True
+USE_SEFT = False
 
 
 def load_latest(use_seft=USE_SEFT):
     model_path = LOCAL_PATH_SEFT if use_seft else LOCAL_PATH_LORA
-    latest_model = os.path.join(model_path, os.listdir(model_path)[-1])
+
+    latest_model = max(os.listdir(model_path), key=lambda x: int(x.split("_")[-1]))
+    latest_model = os.path.join(model_path, latest_model)
     print(latest_model)
 
     # bnb_config = BitsAndBytesConfig(
@@ -75,8 +77,8 @@ if __name__ == '__main__':
         )
 
         print("\n--- Generating  Text ---")
-        output = generator(formatted_prompt)
-        # Extract and print output text cleanly
-        generated_text = output[0]["generated_text"][len(formatted_prompt):]
-        print(generated_text.strip())
+
+        output = generator(formatted_prompt, return_full_text=False)
+        print(repr(output[0]["generated_text"]).strip())
+
         print("---------------------------------")
