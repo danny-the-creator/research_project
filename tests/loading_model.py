@@ -6,11 +6,13 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 LOCAL_PATH_LORA = "../saved_models/lora"
 LOCAL_PATH_SEFT = "../saved_models/seft"
 
-USE_SEFT = True
+USE_SEFT = False
 
 
 def load_latest(use_seft=USE_SEFT):
-    latest_model = os.path.join(LOCAL_PATH_LORA, os.listdir(LOCAL_PATH_LORA)[-1])
+    model_path = LOCAL_PATH_SEFT if use_seft else LOCAL_PATH_LORA
+    latest_model = os.path.join(model_path, os.listdir(LOCAL_PATH_LORA)[-1])
+    # print(model_path)
 
     # bnb_config = BitsAndBytesConfig(
     #     load_in_4bit=True,
@@ -48,8 +50,8 @@ if __name__ == '__main__':
         model=model,
         tokenizer=tokenizer,
         max_new_tokens=150,
-        temperature=0.7,
-        top_p=0.9,
+        # temperature=0.7,
+        # top_p=0.9,
         eos_token_id=terminators,
         pad_token_id=tokenizer.eos_token_id,
     )
