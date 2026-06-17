@@ -51,7 +51,7 @@ if __name__ == '__main__':
         "text-generation",
         model=model,
         tokenizer=tokenizer,
-        max_new_tokens=150,
+        max_new_tokens=512,
         # temperature=0.7,
         # top_p=0.9,
         eos_token_id=terminators,

@@ -20,7 +20,11 @@ from prune import magnitude_prune
 login(token=LLAMA_TOKEN)
 
 # MODEL_NAME  = "RedHatAI/Sparse-Llama-3.1-8B-2of4"   # 2:4 -> 50% sparse
-MODEL_NAME  = "meta-llama/Llama-3.2-3B-Instruct"
+# MODEL_NAME  = "meta-llama/Llama-3.2-3B-Instruct"
+# MODEL_NAME  = "EdgeCompress01/Llama-3.2-3B-Instruct-SparseGPT"
+MODEL_NAME  = "EdgeCompress01/Llama-3.2-3B-Instruct-WANDA"
+SUB_FOLDER   = "Models/50"
+
 SAVE_DIR    = "../saved_models/seft"
 TEMP_FOLDER = "../temp/temp_trainer"
 
@@ -30,7 +34,7 @@ SEFT_DENSITY        = 0.01     # trainable deltas per matrix (~LoRA r=16-ish cap
 TARGET_MODULES      = ["q_proj", "k_proj", "v_proj", "o_proj",
                        "gate_proj", "up_proj", "down_proj"]
 
-RESELECTION_STEPS      = 20        # run drop-and-grow every N steps (40)  (repo: --sft_reselection_steps)
+RESELECTION_STEPS      = 20        # run drop-and-grow every N steps (30)  (repo: --sft_reselection_steps)
 ACCUMULATION_STEPS     = 5         # accumulate grads this many steps  (repo: --sft_selection_accumulation_steps)
 INITIAL_RESELECTION    = 0.2       # fraction dropped/grown per cycle  (repo: --initial_reselection_rate)
 EPOCHS                 = 2
@@ -62,12 +66,12 @@ def save_instance(model, tokenizer):
 
 
 # ---- 1-2. auth + dataset (IDENTICAL to LoRA) ------------------------------
-# raw_data = make_banana_dataset(20)
+# raw_data = make_banana_dataset(200)
 raw_data = load_sherlock_dataset()
 
 # print(raw_data[0])
 
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, subfolder=SUB_FOLDER)
 tokenizer.pad_token    = tokenizer.eos_token
 tokenizer.padding_side = "right"
 if tokenizer.chat_template is None:
@@ -91,19 +95,24 @@ formatted_data = raw_data.map(format_instruction_dataset,
 
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME,
+    subfolder = SUB_FOLDER,
     torch_dtype=torch.bfloat16,
     device_map="auto",
 )
 model.config.use_cache = False
 
-
-
 report_sparsity(model, "before pruning")          # ~0% — it's dense
-n_pruned = magnitude_prune(model, sparsity=SPARSITY, target_substrings=TARGET_MODULES)
-print(f"[PRUNE] magnitude-pruned {n_pruned} matrices to {SPARSITY:.0%}")
-report_sparsity(model, "after pruning")           # should now be high (target modules at 50%)
+# save_instance(model, tokenizer)
+# exit()
 
 
+# report_sparsity(model, "before pruning")          # ~0% — it's dense
+# n_pruned = magnitude_prune(model, sparsity=SPARSITY, target_substrings=TARGET_MODULES)
+# print(f"[PRUNE] magnitude-pruned {n_pruned} matrices to {SPARSITY:.0%}")
+# report_sparsity(model, "after pruning")           # should now be high (target modules at 50%)
+
+# save_instance(model, tokenizer)
+# exit()
 
 # ---- 4. apply SEFT instead of LoRA ----------------------------------------  # <<< CHANGED
 
@@ -118,7 +127,7 @@ training_args = SFTConfig(
     output_dir=TEMP_FOLDER,
     num_train_epochs=EPOCHS,
     per_device_train_batch_size=2,    #1
-    gradient_accumulation_steps=4,
+    gradient_accumulation_steps=8,    #4
     learning_rate=1e-3,            # <<< CHANGED: SEFT uses ~1e-3 (paper) vs 2e-4 for LoRA
     bf16=True,                     # <<< CHANGED: bf16 to match the model dtype (not fp16+4bit)
     gradient_checkpointing=False,  # <<< CHANGED: off — see GUIDE (custom autograd + ckpt needs care)
@@ -129,6 +138,9 @@ training_args = SFTConfig(
     lr_scheduler_type="cosine",
     dataset_text_field="text",
     max_length=1024,  # paper block_size; keeps memory bounded for Sherlock later
+
+    # eval_strategy="steps",
+    # eval_steps=100
 )
 
 # total optimizer steps -> used for the cosine decay of the drop-and-grow rate
@@ -141,7 +153,7 @@ seft_cb = SeftCallback(                              # <<< CHANGED: the topology
     reselection_steps=RESELECTION_STEPS,
     accumulation_steps=ACCUMULATION_STEPS,
     initial_reselection_rate=INITIAL_RESELECTION,
-    total_steps=total_steps
+    total_steps=total_steps,
 )
 
 # ---- 6. trainer (IDENTICAL to LoRA, plus the callback) --------------------
