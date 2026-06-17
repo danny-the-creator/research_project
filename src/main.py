@@ -33,46 +33,60 @@ def save_instance(model, tokenizer):
 
 def format_instruction_dataset(sample):
     message = sample["messages"]
-    formatted_string = tokenizer.apply_chat_template(
-        message,
-        max_length = 512,       # \del
-        truncation = True,      # \del
-        tokenize = False
-    )
 
-    return {"text": formatted_string}
+    return {
+        "prompt": message[:-1],
+        "completion": [message[-1]],
+    }
+
 
 # raw_data = load_dataset("lmassaron/Sherlock_QA", split="train")
-# raw_data = make_banana_dataset(300)
+raw_data = make_banana_dataset(300)
 
-raw_data = load_sherlock_dataset()
+# raw_data = load_sherlock_dataset()
 # raw_data = load_sherlock_dataset()[300:1000]
 
 print(raw_data[10])
 
-# exit()
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 tokenizer.pad_token    = tokenizer.eos_token
 tokenizer.padding_side = "right"
 
-if tokenizer.chat_template is None:
-    tokenizer.chat_template = (
-        "{% set loop_messages = messages %}"
-        "{% for message in loop_messages %}"
-        "{% set content = '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n'+ message['content'] | trim + '<|eot_id|>' %}"
-        "{{ content }}"
-        "{% endfor %}"
-        "{% if add_generation_prompt %}"
-        "{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}"
-        "{% endif %}"
-    )
+# if tokenizer.chat_template is None:
+#     tokenizer.chat_template = (
+#         "{% set loop_messages = messages %}"
+#         "{% for message in loop_messages %}"
+#         "{% set content = '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n'+ message['content'] | trim + '<|eot_id|>' %}"
+#         "{{ content }}"
+#         "{% endfor %}"
+#         "{% if add_generation_prompt %}"
+#         "{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}"
+#         "{% endif %}"
+#     )
 
-formatted_data = raw_data.map(format_instruction_dataset)
+LLAMA3_GEN_TEMPLATE = (
+    "{{ '<|begin_of_text|>' }}"
+    "{% for message in messages %}"
+        "{% if message['role'] == 'assistant' %}"
+            "{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}"
+            "{% generation %}{{ message['content'] | trim }}{{ '<|eot_id|>' }}{% endgeneration %}"
+        "{% else %}"
+            "{{ '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n' + (message['content'] | trim) + '<|eot_id|>' }}"
+        "{% endif %}"
+    "{% endfor %}"
+    "{% if add_generation_prompt %}{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}{% endif %}"
+)
+tokenizer.chat_template = LLAMA3_GEN_TEMPLATE
+formatted_data = raw_data
+
+
+# formatted_data = raw_data.map(format_instruction_dataset, remove_columns=raw_data.column_names)
 
 print(formatted_data)
-print(formatted_data[0])
+print(formatted_data[10])
 
+# exit()
 
 
 # bnb_config = BitsAndBytesConfig(
@@ -90,7 +104,7 @@ print(formatted_data[0])
 
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME,
-    torch_dtype=torch.bfloat16,
+    dtype=torch.bfloat16,
     device_map="auto",
 )
 
@@ -121,15 +135,17 @@ training_args = SFTConfig (
     per_device_train_batch_size=2,
     gradient_accumulation_steps=4,
     learning_rate=2e-4,
-    fp16=True,
+    bf16=True,
     gradient_checkpointing=True,   # trades compute for memory — essential for large models
     logging_steps=10,
     save_steps=100,
     save_total_limit=2,            # only keep the 2 most recent checkpoints
     warmup_ratio=0.03,             # linearly ramp up LR for first 3% of steps
     lr_scheduler_type="cosine",    # cosine decay after warmup — standard for LLM fine-tuning
-    dataset_text_field="text",
-    max_length=1024
+    max_length=1024,
+    packing=False,
+    # completion_only_loss=True,
+    assistant_only_loss=True
 )
 
 trainer = SFTTrainer(
@@ -140,11 +156,19 @@ trainer = SFTTrainer(
     processing_class=tokenizer
 )
 
-
+# batch  = trainer.data_collator([trainer.train_dataset[0]])
+# ids    = batch["input_ids"][0]
+# labels = batch["labels"][0]
+#
+# print("FULL SEQUENCE:\n", tokenizer.decode(ids))
+# print("\nTRAINED ON (labels != -100):\n", tokenizer.decode(ids[labels != -100]))
+# print("\nMASKED OUT (labels == -100):\n", tokenizer.decode(ids[labels == -100]))
+#
+# exit()
 
 print("training...")
 trainer.train()
 
 
 
-save_instance(trainer.model, tokenizer)           # trainer.model.save_pretrained()
+save_instance(trainer.model, tokenizer)

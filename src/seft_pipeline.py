@@ -37,20 +37,17 @@ TARGET_MODULES      = ["q_proj", "k_proj", "v_proj", "o_proj",
 RESELECTION_STEPS      = 20        # run drop-and-grow every N steps (30)  (repo: --sft_reselection_steps)
 ACCUMULATION_STEPS     = 5         # accumulate grads this many steps  (repo: --sft_selection_accumulation_steps)
 INITIAL_RESELECTION    = 0.2       # fraction dropped/grown per cycle  (repo: --initial_reselection_rate)
-EPOCHS                 = 2
+EPOCHS                 = 3
 # ---------------------------------------------------------------------------
 
 
 def format_instruction_dataset(sample):
     message = sample["messages"]
-    formatted_string = tokenizer.apply_chat_template(
-        message,
-        max_length = 512,       # \del
-        truncation = True,      # \del
-        tokenize = False
-    )
 
-    return {"text": formatted_string}
+    return {
+        "prompt": message[:-1],
+        "completion": [message[-1]],
+    }
 
 
 
@@ -66,26 +63,43 @@ def save_instance(model, tokenizer):
 
 
 # ---- 1-2. auth + dataset (IDENTICAL to LoRA) ------------------------------
-# raw_data = make_banana_dataset(200)
-raw_data = load_sherlock_dataset()
+raw_data = make_banana_dataset(300)
+# raw_data = load_sherlock_dataset()
 
 # print(raw_data[0])
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, subfolder=SUB_FOLDER)
 tokenizer.pad_token    = tokenizer.eos_token
 tokenizer.padding_side = "right"
-if tokenizer.chat_template is None:
-    tokenizer.chat_template = (
-        "{% set loop_messages = messages %}"
-        "{% for message in loop_messages %}"
-        "{% set content = '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n'"
-        " + message['content'] | trim + '<|eot_id|>' %}{{ content }}"
-        "{% endfor %}"
-        "{% if add_generation_prompt %}{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}{% endif %}"
-    )
 
-formatted_data = raw_data.map(format_instruction_dataset,
-                              remove_columns=raw_data.column_names)
+# if tokenizer.chat_template is None:
+#     tokenizer.chat_template = (
+#         "{% set loop_messages = messages %}"
+#         "{% for message in loop_messages %}"
+#         "{% set content = '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n'"
+#         " + message['content'] | trim + '<|eot_id|>' %}{{ content }}"
+#         "{% endfor %}"
+#         "{% if add_generation_prompt %}{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}{% endif %}"
+#     )
+#
+# formatted_data = raw_data.map(format_instruction_dataset,
+#                               remove_columns=raw_data.column_names)
+
+
+LLAMA3_GEN_TEMPLATE = (
+    "{{ '<|begin_of_text|>' }}"
+    "{% for message in messages %}"
+        "{% if message['role'] == 'assistant' %}"
+            "{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}"
+            "{% generation %}{{ message['content'] | trim }}{{ '<|eot_id|>' }}{% endgeneration %}"
+        "{% else %}"
+            "{{ '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n' + (message['content'] | trim) + '<|eot_id|>' }}"
+        "{% endif %}"
+    "{% endfor %}"
+    "{% if add_generation_prompt %}{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}{% endif %}"
+)
+tokenizer.chat_template = LLAMA3_GEN_TEMPLATE
+formatted_data = raw_data
 
 
 # print(formatted_data[0]["text"])
@@ -96,7 +110,7 @@ formatted_data = raw_data.map(format_instruction_dataset,
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME,
     subfolder = SUB_FOLDER,
-    torch_dtype=torch.bfloat16,
+    dtype=torch.bfloat16,
     device_map="auto",
 )
 model.config.use_cache = False
@@ -136,8 +150,10 @@ training_args = SFTConfig(
     save_total_limit=2,
     warmup_ratio=0.03,
     lr_scheduler_type="cosine",
-    dataset_text_field="text",
     max_length=1024,  # paper block_size; keeps memory bounded for Sherlock later
+    # completion_only_loss=True,
+    packing=False,
+    assistant_only_loss=True
 
     # eval_strategy="steps",
     # eval_steps=100
