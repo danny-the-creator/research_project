@@ -30,7 +30,7 @@ SEFT_DENSITY        = 0.01     # trainable deltas per matrix (~LoRA r=16-ish cap
 TARGET_MODULES      = ["q_proj", "k_proj", "v_proj", "o_proj",
                        "gate_proj", "up_proj", "down_proj"]
 
-RESELECTION_STEPS      = 40        # run drop-and-grow every N steps   (repo: --sft_reselection_steps)
+RESELECTION_STEPS      = 20        # run drop-and-grow every N steps (40)  (repo: --sft_reselection_steps)
 ACCUMULATION_STEPS     = 5         # accumulate grads this many steps  (repo: --sft_selection_accumulation_steps)
 INITIAL_RESELECTION    = 0.2       # fraction dropped/grown per cycle  (repo: --initial_reselection_rate)
 EPOCHS                 = 2
@@ -41,8 +41,8 @@ def format_instruction_dataset(sample):
     message = sample["messages"]
     formatted_string = tokenizer.apply_chat_template(
         message,
-        max_length = 256,
-        truncation = True,
+        max_length = 512,       # \del
+        truncation = True,      # \del
         tokenize = False
     )
 
@@ -62,7 +62,7 @@ def save_instance(model, tokenizer):
 
 
 # ---- 1-2. auth + dataset (IDENTICAL to LoRA) ------------------------------
-raw_data = make_banana_dataset(20)
+# raw_data = make_banana_dataset(20)
 raw_data = load_sherlock_dataset()
 
 # print(raw_data[0])
@@ -122,13 +122,13 @@ training_args = SFTConfig(
     learning_rate=1e-3,            # <<< CHANGED: SEFT uses ~1e-3 (paper) vs 2e-4 for LoRA
     bf16=True,                     # <<< CHANGED: bf16 to match the model dtype (not fp16+4bit)
     gradient_checkpointing=False,  # <<< CHANGED: off — see GUIDE (custom autograd + ckpt needs care)
-    logging_steps=10,
-    save_steps=100,
+    logging_steps=100,
+    save_steps=1000,             # 100
     save_total_limit=2,
     warmup_ratio=0.03,
     lr_scheduler_type="cosine",
     dataset_text_field="text",
-    # max_seq_length=512,  # paper block_size; keeps memory bounded for Sherlock later
+    max_length=1024,  # paper block_size; keeps memory bounded for Sherlock later
 )
 
 # total optimizer steps -> used for the cosine decay of the drop-and-grow rate

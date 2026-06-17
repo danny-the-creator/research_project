@@ -35,8 +35,8 @@ def format_instruction_dataset(sample):
     message = sample["messages"]
     formatted_string = tokenizer.apply_chat_template(
         message,
-        max_length = 256,
-        truncation = True,
+        max_length = 512,       # \del
+        truncation = True,      # \del
         tokenize = False
     )
 
@@ -129,6 +129,7 @@ training_args = SFTConfig (
     warmup_ratio=0.03,             # linearly ramp up LR for first 3% of steps
     lr_scheduler_type="cosine",    # cosine decay after warmup — standard for LLM fine-tuning
     dataset_text_field="text",
+    max_length=1024
 )
 
 trainer = SFTTrainer(
