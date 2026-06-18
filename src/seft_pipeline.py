@@ -12,18 +12,20 @@ from huggingface_hub import login
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from trl import SFTTrainer, SFTConfig
 
-from config.tokens import LLAMA_TOKEN
+from config.tokens import LLAMA_TOKEN, WANDB_KEY
 from load_datasets import make_banana_dataset, load_sherlock_dataset
 from seft import inject_seft, SeftCallback, seft_modules, report_sparsity, merge_and_unwrap
 from prune import magnitude_prune
 
 login(token=LLAMA_TOKEN)
+os.environ['WANDB_API_KEY'] = WANDB_KEY
+os.environ["WANDB_PROJECT"] = "seft-vs-lora"
 
 # MODEL_NAME  = "RedHatAI/Sparse-Llama-3.1-8B-2of4"   # 2:4 -> 50% sparse
 # MODEL_NAME  = "meta-llama/Llama-3.2-3B-Instruct"
 # MODEL_NAME  = "EdgeCompress01/Llama-3.2-3B-Instruct-SparseGPT"
 MODEL_NAME  = "EdgeCompress01/Llama-3.2-3B-Instruct-WANDA"
-SUB_FOLDER   = "Models/25"
+SUB_FOLDER   = "Models/50"
 
 SAVE_DIR    = "../saved_models/seft"
 TEMP_FOLDER = "../temp/temp_trainer"
@@ -37,7 +39,8 @@ TARGET_MODULES      = ["q_proj", "k_proj", "v_proj", "o_proj",
 RESELECTION_STEPS      = 20        # run drop-and-grow every N steps (30)  (repo: --sft_reselection_steps)
 ACCUMULATION_STEPS     = 5         # accumulate grads this many steps  (repo: --sft_selection_accumulation_steps)
 INITIAL_RESELECTION    = 0.2       # fraction dropped/grown per cycle  (repo: --initial_reselection_rate)
-EPOCHS                 = 1
+EPOCHS                 = 2      # 1
+TEST_SIZE              = 0.1
 # ---------------------------------------------------------------------------
 
 
@@ -101,8 +104,15 @@ LLAMA3_GEN_TEMPLATE = (
 tokenizer.chat_template = LLAMA3_GEN_TEMPLATE
 formatted_data = raw_data
 
+split = formatted_data.train_test_split(test_size=TEST_SIZE, seed=69, shuffle=True)
+train, test = split["train"], split["test"]
 
-# print(formatted_data[0]["text"])
+print(train)
+print(test)
+
+
+
+# print(train[0]["messages"])
 # exit()
 
 # ---- 3. load the SPARSE base model ----------------------------------------  # <<< CHANGED
@@ -142,12 +152,12 @@ training_args = SFTConfig(
     num_train_epochs=EPOCHS,
     per_device_train_batch_size=2,    #1
     gradient_accumulation_steps=8,    #4
-    learning_rate=1e-4,            # <<< CHANGED: SEFT uses ~1e-3 (paper) vs 2e-4 for LoRA
+    learning_rate=2e-4,            # <<< CHANGED: SEFT uses ~1e-3 (paper) vs 2e-4 for LoRA
     bf16=True,                     # <<< CHANGED: bf16 to match the model dtype (not fp16+4bit)
     gradient_checkpointing=False,  # <<< CHANGED: off — see GUIDE (custom autograd + ckpt needs care)
-    logging_steps=100,
-    save_steps=1000,             # 100
-    save_total_limit=2,
+    logging_steps=20,
+    save_steps=200,             # 200
+    save_total_limit=3,
     warmup_ratio=0.03,
     lr_scheduler_type="cosine",
     max_length=1024,  # paper block_size; keeps memory bounded for Sherlock later
@@ -155,12 +165,17 @@ training_args = SFTConfig(
     packing=False,
     assistant_only_loss=True,
 
-    # eval_strategy="steps",
-    # eval_steps=100
+    eval_strategy="steps",
+    eval_steps=100,  # 100
+    load_best_model_at_end=True,
+    metric_for_best_model="eval_loss",
+    greater_is_better=False,
+    report_to=["wandb"],
+    per_device_eval_batch_size=4
 )
 
 # total optimizer steps -> used for the cosine decay of the drop-and-grow rate
-steps_per_epoch = math.ceil(len(formatted_data) /
+steps_per_epoch = math.ceil(len(train) /
                             (training_args.per_device_train_batch_size *
                              training_args.gradient_accumulation_steps))
 total_steps = steps_per_epoch * training_args.num_train_epochs
@@ -175,7 +190,8 @@ seft_cb = SeftCallback(                              # <<< CHANGED: the topology
 # ---- 6. trainer (IDENTICAL to LoRA, plus the callback) --------------------
 trainer = SFTTrainer(
     model=model,
-    train_dataset=formatted_data,
+    train_dataset=train,
+    eval_dataset=test,
     args=training_args,
     processing_class=tokenizer,
     callbacks=[seft_cb],                            # <<< CHANGED
@@ -195,3 +211,8 @@ report_sparsity(model, "after fine-tuning (merged)")   # should still be ~50%
 
 save_instance(model, tokenizer)
 print(f"Saved Successfully")
+
+
+#
+report_sparsity(trainer.model, "best checkpoint (reloaded)")   # should ≈ your target
+print(trainer.evaluate())                                       # eval_loss should match the best logged value
