@@ -12,6 +12,7 @@ from trl import SFTTrainer, SFTConfig
 
 login(token=LLAMA_TOKEN)
 os.environ['WANDB_API_KEY'] = WANDB_KEY
+os.environ["WANDB_PROJECT"] = "seft-vs-lora"
 
 
 # MODEL_NAME = "RedHatAI/Sparse-Llama-3.1-8B-2of4"
@@ -107,8 +108,8 @@ print(test)
 # model = AutoModelForCausalLM.from_pretrained(
 #     MODEL_NAME,
 #     quantization_config=bnb_config,
-#     device_map="auto",
-# )
+#     device_map="auto"
+#     )
 
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME,
@@ -146,7 +147,7 @@ training_args = SFTConfig (
     bf16=True,
     gradient_checkpointing=True,   # trades compute for memory — essential for large models
     logging_steps=10,
-    save_steps=400,                 # 500
+    save_steps=200,                 # 500
     save_total_limit=3,            # only keep the 2 most recent checkpoints
     warmup_ratio=0.03,             # linearly ramp up LR for first 3% of steps
     lr_scheduler_type="cosine",    # cosine decay after warmup — standard for LLM fine-tuning
@@ -155,7 +156,7 @@ training_args = SFTConfig (
     assistant_only_loss=True,
 
     eval_strategy="steps",
-    eval_steps=200,                 # 250
+    eval_steps=100,                 # 250
     load_best_model_at_end=True,
     metric_for_best_model="eval_loss",
     greater_is_better=False,
