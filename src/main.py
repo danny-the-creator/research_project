@@ -1,4 +1,4 @@
-from config.tokens import LLAMA_TOKEN
+from config.tokens import LLAMA_TOKEN, WANDB_KEY
 from load_datasets import make_banana_dataset, load_sherlock_dataset
 
 import os
@@ -9,7 +9,9 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from peft import LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
 from trl import SFTTrainer, SFTConfig
 
+
 login(token=LLAMA_TOKEN)
+os.environ['WANDB_API_KEY'] = WANDB_KEY
 
 
 # MODEL_NAME = "RedHatAI/Sparse-Llama-3.1-8B-2of4"
@@ -19,6 +21,7 @@ SAVE_DIR = "../saved_models/lora"
 TEMP_FOLDER = "../temp/temp_trainer"
 
 EPOCHS = 2      # 3
+TEST_SIZE = 0.1
 
 def save_instance(model, tokenizer):
     os.makedirs(SAVE_DIR, exist_ok=True)
@@ -41,9 +44,9 @@ def format_instruction_dataset(sample):
 
 
 # raw_data = load_dataset("lmassaron/Sherlock_QA", split="train")
-raw_data = make_banana_dataset(300)
+# raw_data = make_banana_dataset(300)
 
-# raw_data = load_sherlock_dataset()
+raw_data = load_sherlock_dataset()
 # raw_data = load_sherlock_dataset()[300:1000]
 
 print(raw_data[10])
@@ -80,11 +83,16 @@ LLAMA3_GEN_TEMPLATE = (
 tokenizer.chat_template = LLAMA3_GEN_TEMPLATE
 formatted_data = raw_data
 
+split = formatted_data.train_test_split(test_size=TEST_SIZE, seed=69, shuffle=True)
+train, test = split["train"], split["test"]
+
+print(train)
+print(test)
 
 # formatted_data = raw_data.map(format_instruction_dataset, remove_columns=raw_data.column_names)
-
-print(formatted_data)
-print(formatted_data[10])
+#
+# print(formatted_data)
+# print(formatted_data[10])
 
 # exit()
 
@@ -138,19 +146,27 @@ training_args = SFTConfig (
     bf16=True,
     gradient_checkpointing=True,   # trades compute for memory — essential for large models
     logging_steps=10,
-    save_steps=100,
-    save_total_limit=2,            # only keep the 2 most recent checkpoints
+    save_steps=400,                 # 500
+    save_total_limit=3,            # only keep the 2 most recent checkpoints
     warmup_ratio=0.03,             # linearly ramp up LR for first 3% of steps
     lr_scheduler_type="cosine",    # cosine decay after warmup — standard for LLM fine-tuning
     max_length=1024,
     packing=False,
-    # completion_only_loss=True,
-    assistant_only_loss=True
+    assistant_only_loss=True,
+
+    eval_strategy="steps",
+    eval_steps=200,                 # 250
+    load_best_model_at_end=True,
+    metric_for_best_model="eval_loss",
+    greater_is_better=False,
+    report_to=["wandb"],
+    per_device_eval_batch_size=4
 )
 
 trainer = SFTTrainer(
     model=new_model,
-    train_dataset=formatted_data,
+    train_dataset=train,
+    eval_dataset=test,
     args=training_args,
     peft_config=lora_config,
     processing_class=tokenizer
