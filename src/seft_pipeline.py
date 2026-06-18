@@ -23,7 +23,7 @@ login(token=LLAMA_TOKEN)
 # MODEL_NAME  = "meta-llama/Llama-3.2-3B-Instruct"
 # MODEL_NAME  = "EdgeCompress01/Llama-3.2-3B-Instruct-SparseGPT"
 MODEL_NAME  = "EdgeCompress01/Llama-3.2-3B-Instruct-WANDA"
-SUB_FOLDER   = "Models/50"
+SUB_FOLDER   = "Models/25"
 
 SAVE_DIR    = "../saved_models/seft"
 TEMP_FOLDER = "../temp/temp_trainer"
@@ -37,7 +37,7 @@ TARGET_MODULES      = ["q_proj", "k_proj", "v_proj", "o_proj",
 RESELECTION_STEPS      = 20        # run drop-and-grow every N steps (30)  (repo: --sft_reselection_steps)
 ACCUMULATION_STEPS     = 5         # accumulate grads this many steps  (repo: --sft_selection_accumulation_steps)
 INITIAL_RESELECTION    = 0.2       # fraction dropped/grown per cycle  (repo: --initial_reselection_rate)
-EPOCHS                 = 3
+EPOCHS                 = 1
 # ---------------------------------------------------------------------------
 
 
@@ -63,8 +63,8 @@ def save_instance(model, tokenizer):
 
 
 # ---- 1-2. auth + dataset (IDENTICAL to LoRA) ------------------------------
-raw_data = make_banana_dataset(300)
-# raw_data = load_sherlock_dataset()
+# raw_data = make_banana_dataset(300)
+raw_data = load_sherlock_dataset()
 
 # print(raw_data[0])
 
@@ -142,7 +142,7 @@ training_args = SFTConfig(
     num_train_epochs=EPOCHS,
     per_device_train_batch_size=2,    #1
     gradient_accumulation_steps=8,    #4
-    learning_rate=1e-3,            # <<< CHANGED: SEFT uses ~1e-3 (paper) vs 2e-4 for LoRA
+    learning_rate=1e-4,            # <<< CHANGED: SEFT uses ~1e-3 (paper) vs 2e-4 for LoRA
     bf16=True,                     # <<< CHANGED: bf16 to match the model dtype (not fp16+4bit)
     gradient_checkpointing=False,  # <<< CHANGED: off — see GUIDE (custom autograd + ckpt needs care)
     logging_steps=100,
@@ -153,7 +153,7 @@ training_args = SFTConfig(
     max_length=1024,  # paper block_size; keeps memory bounded for Sherlock later
     # completion_only_loss=True,
     packing=False,
-    assistant_only_loss=True
+    assistant_only_loss=True,
 
     # eval_strategy="steps",
     # eval_steps=100
