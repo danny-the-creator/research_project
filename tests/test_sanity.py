@@ -5,7 +5,8 @@ L1  no code — run both pipelines, show train/eval loss from wandb.
 L2  compare_outputs()  -> base vs LoRA vs SEFT on a few questions.
 L3  check_sparsity()   -> SEFT stays ~50% sparse, LoRA merges back to dense.
 """
-from test_common import MODELS, load, free, get_eval_data, generate
+import json
+from test_common import MODELS,SHOWCASE_ANSWERS_PATH, load, free, get_eval_data, generate, get_showcase_data
 
 
 def compare_outputs(n_prompts=3):
@@ -23,6 +24,25 @@ def compare_outputs(n_prompts=3):
         del model
         free()
 
+def showcase(out_file="showcase_answers.json"):
+    """S1 — every showcase question answered by every model; saved to JSON."""
+    prompts = get_showcase_data()
+
+    answers = {}                                          # model -> [answer per question]
+    for name in MODELS:
+        model, tok = load(name)
+        answers[name] = [a[0] for a in generate(model, tok, prompts, max_new_tokens=256, do_sample=False)]
+        del model
+        free()
+
+    records = [                                           # reshape to one record per question
+        {"question": q[0]["content"], **{name: answers[name][i] for name in MODELS}}
+        for i, q in enumerate(prompts)
+    ]
+    with open(out_file, "w", encoding="utf-8") as f:
+        json.dump(records, f, indent=2, ensure_ascii=False)
+    print(f"[SANITY] wrote {len(records)} showcase answers to {out_file}")
+    return records
 
 def check_sparsity():
     """L3 — percentage of zero weights per model (SEFT ~50%, LoRA ~0%)."""
@@ -47,4 +67,10 @@ def check_sparsity():
 
 if __name__ == "__main__":
     check_sparsity()
+
+    print("\nCOMPARE EVALUATION OUTPUTS:")
     compare_outputs()
+
+    print("\nCOMPARE SHOWCASE OUTPUTS:")
+
+    showcase(SHOWCASE_ANSWERS_PATH)

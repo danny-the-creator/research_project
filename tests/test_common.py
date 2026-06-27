@@ -5,6 +5,7 @@ login + load(name) + load_judge() + free() + get_eval_data() + generate().
 Every test_*.py imports from here. Edit the dirs / model names below.
 """
 import os
+import json
 import gc
 import torch
 from huggingface_hub import login
@@ -14,6 +15,9 @@ from config.tokens import LLAMA_TOKEN
 from load_datasets import load_sherlock_dataset
 
 login(token=LLAMA_TOKEN)                               # gated meta-llama repos need this, like your training scripts
+
+SHOWCASE_QUESTIONS_PATH = "../showcase_ex/questions.json"
+SHOWCASE_ANSWERS_PATH = "../showcase_ex/agents_answers.json"
 
 LORA_DIR, SEFT_DIR = "../saved_models/lora", "../saved_models/seft"
 REFERENCE_MODEL = "meta-llama/Llama-3.2-3B-Instruct"   # dense base: fluency reference for the diversity tradeoff
@@ -78,6 +82,12 @@ def get_eval_data(n=30):
     golds   = [ex["messages"][-1]["content"] for ex in test]
     return prompts, fulls, golds
 
+def get_showcase_data(p= SHOWCASE_QUESTIONS_PATH):
+    """Held-out prompts to imitate real-world scenarios."""
+    with open(p) as file:
+        questions = json.load(file)
+    # print(len(questions))
+    return [[{"content": q, "role": "user"}] for q in questions]
 
 @torch.no_grad()
 def generate(model, tok, prompts, max_new_tokens=200, num_return_sequences=1, **gen_kwargs):
@@ -91,3 +101,8 @@ def generate(model, tok, prompts, max_new_tokens=200, num_return_sequences=1, **
                              eos_token_id=[tok.eos_token_id, eot], pad_token_id=tok.eos_token_id, **gen_kwargs)
         outputs.append(tok.batch_decode(gen[:, inputs["input_ids"].shape[1]:], skip_special_tokens=True))
     return outputs
+
+
+if __name__ == '__main__':
+    print(get_eval_data()[0])
+    print(get_showcase_data())
