@@ -56,14 +56,31 @@ def flops_analysis(model):
     frac = nz / max(tot, 1)
     return dict(nonzero_frac=frac, theoretical_reduction=1 - frac, ideal_speedup=1 / max(frac, 1e-9))
 
+@torch.no_grad()
+def model_size_gb(model):
+    """Stored size of the weights in GB (handles bf16 and 4-bit packed params)."""
+    bytes_ = sum(p.numel() * p.element_size() for p in model.parameters())
+    return bytes_ / 1e9
 
 if __name__ == "__main__":
     prompts, _, _ = get_eval_data(1)
     for name in MODELS:
         model, tok = load(name)
+
+        size = model_size_gb(model)
+
+        torch.cuda.reset_peak_memory_stats()
         tps = throughput(model, tok, prompts[0])
-        fa = flops_analysis(model)
-        print(f"[EFF] {name:5s} {tps:5.1f} tok/s | nonzero={fa['nonzero_frac']:.2f} "
-              f"reduction={fa['theoretical_reduction']:.2f} ideal_speedup={fa['ideal_speedup']:.2f}x")
+        peak = torch.cuda.max_memory_allocated() / 1e9
+
+        if name != "lora-q":
+            fa = flops_analysis(model)
+            print(f"[EFF] {name:6s} {tps:5.1f} tok/s | size={size:.2f}GB peak={peak:.2f}GB | "  
+                  f"nonzero={fa['nonzero_frac']:.2f} reduction={fa['theoretical_reduction']:.2f} "
+                  f"ideal_speedup={fa['ideal_speedup']:.2f}x")
+        else:
+            print(f"[EFF] {name:6s} {tps:5.1f} tok/s | size={size:.2f}GB peak={peak:.2f}GB | " 
+                  f"flops n/a (4-bit)")
+
         del model
         free()

@@ -26,13 +26,23 @@ def compare_outputs(n_prompts=3):
 
 def check_sparsity():
     """L3 — percentage of zero weights per model (SEFT ~50%, LoRA ~0%)."""
+    sparsity_levels = {}
     for name in MODELS:
+        if name == "lora-q":
+            continue
         model, _ = load(name)
         zero = sum((p == 0).sum().item() for p in model.parameters())
         tot = sum(p.numel() for p in model.parameters())
-        print(f"[SANITY] {name:5s} sparsity: {100.0 * zero / tot:.1f}%")
+
+        sparsity_levels[name] = {"zero": zero, "tot": tot}
+
         del model
         free()
+
+    sparsity_levels["lora-q"] = sparsity_levels["lora"].copy()
+
+    for name, items in sparsity_levels.items():
+        print(f"[SANITY] {name:5s} sparsity: {100.0 * items['zero'] / items['tot']:.1f}%")
 
 
 if __name__ == "__main__":

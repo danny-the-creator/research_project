@@ -16,32 +16,37 @@ from load_datasets import load_sherlock_dataset
 login(token=LLAMA_TOKEN)                               # gated meta-llama repos need this, like your training scripts
 
 LORA_DIR, SEFT_DIR = "../saved_models/lora", "../saved_models/seft"
-PRUNED_REPO, PRUNED_SUB = "EdgeCompress01/Llama-3.2-3B-Instruct-WANDA", "Models/50"
 REFERENCE_MODEL = "meta-llama/Llama-3.2-3B-Instruct"   # dense base: fluency reference for the diversity tradeoff
-JUDGE_MODEL     = "meta-llama/Llama-3.1-8B-Instruct"   # quantized LLM judge; swap for a stronger one later
+JUDGE_MODEL     = "meta-llama/Llama-3.1-8B-Instruct"   # quantized LLM judge; swap for a stronger one in future work
 PERSONA = "Sherlock Holmes"
-MODELS = ("base", "lora", "seft")                      # the three checkpoints under test
+MODELS = ("base", "lora", "lora-q", "seft")                      # the three checkpoints under test
 SEED, TEST_SIZE = 69, 0.1
 
 
 def _path(name):
     """Resolve a model name to (path, subfolder)."""
-    if name == "base":
-        return PRUNED_REPO, PRUNED_SUB
-    if name == "reference":
-        return REFERENCE_MODEL, None
+    if name in ("base", "reference"):
+        return REFERENCE_MODEL
     d = SEFT_DIR if name == "seft" else LORA_DIR        # newest version_N folder, like your load_latest
-    return os.path.join(d, max(os.listdir(d), key=lambda x: int(x.split("_")[-1]))), None
+    return os.path.join(d, max(os.listdir(d), key=lambda x: int(x.split("_")[-1])))
 
 
 def load(name):
     """Load a model AND its tokenizer by name: 'base' / 'lora' / 'seft' / 'reference'."""
-    path, sub = _path(name)
-    extra = {"subfolder": sub} if sub else {}           # omit subfolder when None (transformers chokes on None)
-    model = AutoModelForCausalLM.from_pretrained(path, dtype=torch.bfloat16, device_map="auto", **extra)
+    path = _path(name)
+    kwargs = dict(device_map="auto")
+
+    if name == "lora-q":
+        kwargs["quantization_config"] =  BitsAndBytesConfig(
+            load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.bfloat16)
+    else:
+        kwargs["dtype"] = torch.bfloat16
+
+
+    model = AutoModelForCausalLM.from_pretrained(path, **kwargs)
     model.config.use_cache = True                       # inference: KV cache on (training saved it False)
     model.eval()
-    tok = AutoTokenizer.from_pretrained(path, **extra)
+    tok = AutoTokenizer.from_pretrained(path)
     tok.pad_token = tok.eos_token
     return model, tok
 
