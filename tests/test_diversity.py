@@ -22,6 +22,10 @@ from test_common import MODELS, load, free, get_eval_data, generate
 
 _smooth = SmoothingFunction().method1
 
+def repetition_rate(text, n=3):
+    grams = list(ngrams(text.split(), n))
+    return 1 - len(set(grams)) / len(grams) if grams else 0.0
+
 
 def distinct_n(texts, n):
     """Fraction of unique n-grams across all texts (higher = more varied)."""
@@ -59,10 +63,11 @@ def diversity_scores(model, tok, prompts, temperature=0.8, n=5):
                        do_sample=True, temperature=temperature, top_p=0.95)
     per_prompt_sb = [self_bleu(group) for group in samples]
     flat = [s for group in samples for s in group]
-    return per_prompt_sb, distinct_n(flat, 1), distinct_n(flat, 2)
+    avg_rep = np.mean([repetition_rate(s) for g in samples for s in g])
+    return per_prompt_sb, distinct_n(flat, 1), distinct_n(flat, 2), avg_rep
 
 
-def tradeoff(temps=(0.5, 0.8, 1.1), n_prompts=30, n=5):
+def tradeoff(temps=(0.3, 0.5, 0.7, 0.8, 0.9, 1.1, 1.3), n_prompts=30, n=5):
     """L3 — diversity at several temperatures per model; plot quality vs diversity."""
     prompts, _, _ = get_eval_data(n_prompts)
 
@@ -105,10 +110,11 @@ if __name__ == "__main__":
     sb = {}                                             # L1 (and L2 = more prompts -> mean ± std)
     for name in MODELS:
         model, tok = load(name)
-        per_prompt_sb, d1, d2 = diversity_scores(model, tok, prompts)
+        per_prompt_sb, d1, d2, avg_repeat = diversity_scores(model, tok, prompts)
         sb[name] = per_prompt_sb
         print(f"[DIV] {name:5s} self_bleu={np.mean(per_prompt_sb):.3f}+-{np.std(per_prompt_sb):.3f} "
-              f"distinct_1={d1:.3f} distinct_2={d2:.3f}")
+              f"distinct_1={d1:.3f} distinct_2={d2:.3f} "
+              f"avg_repeat={avg_repeat:.5f}")
         del model
         free()
     if "lora" in sb and "seft" in sb:
