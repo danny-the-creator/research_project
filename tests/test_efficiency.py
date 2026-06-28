@@ -90,7 +90,7 @@ def train_memory_vs_length(name, lengths=(256, 512, 1024), batch_size=1):
         out.loss.backward()
         model.zero_grad(set_to_none=True)
         peaks.append(torch.cuda.max_memory_allocated() / 1e9)
-        print(f"[EFF-E3] {name:5s} L={L:5d}: peak {peaks[-1]:.2f} GB")
+        print(f"[EFF-E3] {name:5s} L={L:5d}: peak {peaks[-1]:.3f} GB")
 
     del model
     free()
@@ -112,11 +112,6 @@ def plot_train_memory(models=("lora", "seft"), lengths=(256, 512, 1024)):
 
 
 if __name__ == "__main__":
-    print("STARTING THE PLOT")
-    plot_train_memory()
-    exit()
-
-
     prompts, _, _ = get_eval_data(1)
     for name in MODELS:
         model, tok = load(name)
@@ -139,5 +134,5 @@ if __name__ == "__main__":
         del model
         free()
 
-    # print("STARTING THE PLOT")
-    # plot_train_memory()
+    print("STARTING THE PLOT")
+    plot_train_memory()
