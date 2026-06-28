@@ -27,6 +27,14 @@ MODELS = ("base", "lora", "lora-q", "seft")                      # the three che
 SEED, TEST_SIZE = 69, 0.1
 
 
+PERSONA_RUBRIC = ("Rate from 1 to 5 how strongly the passage below reads like {persona} "
+          "(1 = no resemblance, 5 = unmistakably {persona}). Reply with only the number.\n\n"
+          "Passage:\n{text}")
+
+HELP_RUBRIC = ("Rate 1-5 how completely the answer addresses the question (1=ignores it, 5=fully answers). "
+               "Reply with only the number.\n\nQuestion: {question}\nAnswer: {text}")
+
+
 def _path(name):
     """Resolve a model name to (path, subfolder)."""
     if name in ("base", "reference"):
@@ -104,5 +112,5 @@ def generate(model, tok, prompts, max_new_tokens=200, num_return_sequences=1, **
 
 
 if __name__ == '__main__':
-    print(get_eval_data()[0])
-    print(get_showcase_data())
+    print(len(get_eval_data(1000)[0]))
+    # print(get_showcase_data())

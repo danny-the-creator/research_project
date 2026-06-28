@@ -7,17 +7,23 @@ L2  perplexity()   -> held-out perplexity on the assistant tokens.
 L3  judge_score()  -> average LLM-as-judge persona rating.
 """
 import re
+import json
 import math
 import torch
-from test_common import MODELS, PERSONA, load, load_judge, free, get_eval_data, generate
+from test_common import (MODELS, PERSONA, PERSONA_RUBRIC, HELP_RUBRIC, SHOWCASE_ANSWERS_PATH,
+                         load, load_judge, free, get_eval_data, generate)
 
-RUBRIC = ("Rate from 1 to 5 how strongly the passage below reads like {persona} "
-          "(1 = no resemblance, 5 = unmistakably {persona}). Reply with only the number.\n\n"
-          "Passage:\n{text}")
 
+
+def _ask(judge, judge_tok, content):
+    inputs = judge_tok.apply_chat_template([{"role": "user", "content": content}], add_generation_prompt=True,
+                                           return_tensors="pt", return_dict=True).to(judge.device)
+    out = judge.generate(**inputs, max_new_tokens=4, do_sample=False, pad_token_id=judge_tok.eos_token_id)
+    m = re.search(r"[1-5]", judge_tok.decode(out[0, inputs["input_ids"].shape[1]:], skip_special_tokens=True))
+    return int(m.group()) if m else None
 
 @torch.no_grad()
-def perplexity(n_prompts=50):
+def perplexity(n_prompts=500):
     """L1+L2 — held-out perplexity per model, scoring assistant tokens only.
     Skips base: its stock tokenizer has no {% generation %} markers."""
     _, fulls, _ = get_eval_data(n_prompts)
@@ -42,8 +48,8 @@ def perplexity(n_prompts=50):
 
 
 @torch.no_grad()
-def judge_score(n_prompts=25):
-    """L3 — average 1-5 persona rating from the LLM judge, per model."""
+def persona_score(n_prompts=300):
+    """Q4 (persona axis) — average 1-5 persona rating on held-out prompts, per model."""
     prompts, _, _ = get_eval_data(n_prompts)
 
     answers = {}                                        # generate first, free each model, then judge
@@ -55,20 +61,37 @@ def judge_score(n_prompts=25):
 
     judge, judge_tok = load_judge()
     for name, texts in answers.items():
-        scores = []
-        for text in texts:
-            prompt = RUBRIC.format(persona=PERSONA, text=text)
-            inputs = judge_tok.apply_chat_template([{"role": "user", "content": prompt}], add_generation_prompt=True,
-                                                   return_tensors="pt", return_dict=True).to(judge.device)
-            out = judge.generate(**inputs, max_new_tokens=4, do_sample=False, pad_token_id=judge_tok.eos_token_id)
-            m = re.search(r"[1-5]", judge_tok.decode(out[0, inputs["input_ids"].shape[1]:], skip_special_tokens=True))
-            if m:
-                scores.append(int(m.group()))
-        print(f"[QUALITY] {name:5s} persona score: {sum(scores) / len(scores):.2f}  (n={len(scores)})")
+        scores = [s for s in (_ask(judge, judge_tok, PERSONA_RUBRIC.format(persona=PERSONA, text=t))
+                              for t in texts) if s is not None]
+        n = len(scores)
+        mean = sum(scores) / n
+        std = (sum((x - mean) ** 2 for x in scores) / n) ** 0.5
+        print(f"[QUALITY] {name:6s} persona {mean:.2f} ± {std:.2f}  (n={n})")
     del judge
     free()
 
 
+def helpfulness_score(answers_file="showcase_answers.json"):
+    """Q4 (helpfulness axis) — judge how completely each model answers the showcase questions.
+    Reads the records S1's showcase() already wrote, so no regeneration."""
+    with open(answers_file, encoding="utf-8") as f:
+        records = json.load(f)                            # [{"question":..., "base":..., "lora":..., ...}, ...]
+
+    judge, judge_tok = load_judge()
+    for name in MODELS:
+        scores = []
+        for rec in records:
+            s = _ask(judge, judge_tok, HELP_RUBRIC.format(question=rec["question"], text=rec[name]))
+            if s is not None:
+                scores.append(s)
+        n = len(scores)
+        mean = sum(scores) / n
+        std = (sum((x - mean) ** 2 for x in scores) / n) ** 0.5
+        print(f"[QUALITY] {name:6s} helpfulness {mean:.2f} ± {std:.2f}  (n={n})")
+    del judge
+    free()
+
 if __name__ == "__main__":
-    perplexity()      # L1 + L2
-    judge_score()     # L3
+    perplexity()
+    persona_score()
+    helpfulness_score(SHOWCASE_ANSWERS_PATH)
