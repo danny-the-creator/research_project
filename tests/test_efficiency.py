@@ -12,6 +12,11 @@ Inference (on saved checkpoints):
 import time
 import torch
 from transformers import TrainerCallback
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
 from test_common import MODELS, load, free, get_eval_data
 
 TARGET = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
@@ -62,7 +67,56 @@ def model_size_gb(model):
     bytes_ = sum(p.numel() * p.element_size() for p in model.parameters())
     return bytes_ / 1e9
 
+
+def train_memory_vs_length(name, lengths=(256, 512, 1024), batch_size=1):
+    """E3 — peak GPU memory of ONE training step (forward + backward) vs sequence length.
+    Run for 'lora' and 'seft' and plot the two curves. NOTE: a probe, not your real training;
+    both pipelines use identical settings here so the comparison is clean."""
+    model, tok = load(name)
+    model.config.use_cache = False          # training mode: no KV cache, real activation memory
+    model.gradient_checkpointing_disable()  # identical setting for both pipelines (see note)
+    model.train()
+
+    for p in model.parameters():
+        p.requires_grad_(True)  # <-- the fix: ensure grads are tracked
+
+    peaks = []
+    for L in lengths:
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+        # a dummy batch of length L: labels=input_ids so a real loss + backward runs
+        ids = torch.randint(0, tok.vocab_size, (batch_size, L), device=model.device)
+        out = model(input_ids=ids, labels=ids)
+        out.loss.backward()
+        model.zero_grad(set_to_none=True)
+        peaks.append(torch.cuda.max_memory_allocated() / 1e9)
+        print(f"[EFF-E3] {name:5s} L={L:5d}: peak {peaks[-1]:.2f} GB")
+
+    del model
+    free()
+    return list(lengths), peaks
+
+
+def plot_train_memory(models=("lora", "seft"), lengths=(256, 512, 1024)):
+    """E3 driver — run the probe for each pipeline and save one figure."""
+    for name in models:
+        xs, ys = train_memory_vs_length(name, lengths)
+        plt.plot(xs, ys, marker="o", label=name)
+    plt.xlabel("sequence length (tokens)")
+    plt.ylabel("peak training memory (GB)")
+    plt.title("Training memory vs sequence length")
+    plt.legend()
+    plt.savefig("train_memory.png", dpi=150, bbox_inches="tight")
+    print("[EFF-E3] saved train_memory.png")
+
+
+
 if __name__ == "__main__":
+    print("STARTING THE PLOT")
+    plot_train_memory()
+    exit()
+
+
     prompts, _, _ = get_eval_data(1)
     for name in MODELS:
         model, tok = load(name)
@@ -84,3 +138,6 @@ if __name__ == "__main__":
 
         del model
         free()
+
+    # print("STARTING THE PLOT")
+    # plot_train_memory()
