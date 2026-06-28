@@ -11,6 +11,7 @@ Diversity needs SAMPLED decoding and is only meaningful read against quality.
 import math
 import torch
 import numpy as np
+from transformers import set_seed
 from nltk import ngrams
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 from scipy.stats import wilcoxon
@@ -21,6 +22,9 @@ import matplotlib.pyplot as plt
 from test_common import MODELS, load, free, get_eval_data, generate
 
 _smooth = SmoothingFunction().method1
+
+SEEDS = [0, 1, 2]
+
 
 def repetition_rate(text, n=3):
     grams = list(ngrams(text.split(), n))
@@ -67,7 +71,7 @@ def diversity_scores(model, tok, prompts, temperature=0.8, n=5):
     return per_prompt_sb, distinct_n(flat, 1), distinct_n(flat, 2), avg_rep
 
 
-def tradeoff(temps=(0.3, 0.5, 0.7, 0.8, 0.9, 1.1, 1.3), n_prompts=30, n=5):
+def tradeoff(temps=(0.3, 0.5, 0.7, 0.8, 0.9, 1.1, 1.3), n_prompts=30, n=5, seeds=SEEDS):
     """L3 — diversity at several temperatures per model; plot quality vs diversity."""
     prompts, _, _ = get_eval_data(n_prompts)
 
@@ -76,21 +80,30 @@ def tradeoff(temps=(0.3, 0.5, 0.7, 0.8, 0.9, 1.1, 1.3), n_prompts=30, n=5):
         if name == "base":
             continue
         model, tok = load(name)
-        raw[name] = {t: generate(model, tok, prompts, max_new_tokens=200, num_return_sequences=n,
-                                 do_sample=True, temperature=t, top_p=0.95) for t in temps}
+        raw[name] = {}
+        for t in temps:
+            per_seed = []
+            for s in seeds:  # NEW: one generation per seed
+                set_seed(s)
+                per_seed.append(generate(model, tok, prompts, max_new_tokens=200, num_return_sequences=n,
+                                         do_sample=True, temperature=t, top_p=0.95))
+            raw[name][t] = per_seed
         del model
         free()
 
-    ref, ref_tok = load("reference")                    # dense base = fluency reference
+    ref, ref_tok = load("reference")
     for name, by_temp in raw.items():
-        xs, ys = [], []
-        for t, samples in by_temp.items():
-            div = float(np.mean([self_bleu(group) for group in samples]))
-            qual = fluency_ppl([s for group in samples for s in group], ref, ref_tok)
-            xs.append(div)
-            ys.append(qual)
-            print(f"[DIV] {name} T={t}: self_bleu={div:.3f} fluency_ppl={qual:.2f}")
-        plt.plot(xs, ys, marker="o", label=name)
+        xs, ys, xerr, yerr = [], [], [], []  # NEW: means + stds per temperature
+        for t, per_seed in by_temp.items():
+            divs = [float(np.mean([self_bleu(g) for g in samples])) for samples in per_seed]
+            quals = [fluency_ppl([s for g in samples for s in g], ref, ref_tok) for samples in per_seed]
+            xs.append(np.mean(divs))
+            ys.append(np.mean(quals))
+            xerr.append(np.std(divs))  # NEW: spread across seeds
+            yerr.append(np.std(quals))
+            print(f"[DIV] {name} T={t}: self_bleu {np.mean(divs):.3f}±{np.std(divs):.3f} "
+                  f"fluency_ppl {np.mean(quals):.2f}±{np.std(quals):.2f}")
+        plt.errorbar(xs, ys, xerr=xerr, yerr=yerr, marker="o", capsize=3, label=name)
         for t, x, y in zip(temps, xs, ys):
             plt.annotate(f"T={t}", (x, y))
     del ref
@@ -107,18 +120,28 @@ def tradeoff(temps=(0.3, 0.5, 0.7, 0.8, 0.9, 1.1, 1.3), n_prompts=30, n=5):
 if __name__ == "__main__":
     prompts, _, _ = get_eval_data(30)
 
-    sb = {}                                             # L1 (and L2 = more prompts -> mean ± std)
+    sb_seed0 = {}                                      # NEW: per-prompt Self-BLEU at the first seed, for the paired test
     for name in MODELS:
         model, tok = load(name)
-        per_prompt_sb, d1, d2, avg_repeat = diversity_scores(model, tok, prompts)
-        sb[name] = per_prompt_sb
-        print(f"[DIV] {name:5s} self_bleu={np.mean(per_prompt_sb):.3f}+-{np.std(per_prompt_sb):.3f} "
-              f"distinct_1={d1:.3f} distinct_2={d2:.3f} "
-              f"avg_repeat={avg_repeat:.5f}")
+        sb_means, d1s, d2s, reps = [], [], [], []               # NEW: collect one value per seed
+        for i, s in enumerate(SEEDS):
+            print(f"Seed: {s}")
+            set_seed(s)                                # NEW: fix randomness for this pass
+            per_prompt_sb, d1, d2, rep = diversity_scores(model, tok, prompts)   # unchanged call
+            sb_means.append(np.mean(per_prompt_sb))
+            d1s.append(d1)
+            d2s.append(d2)
+            reps.append(rep)
+            if i == 0:
+                sb_seed0[name] = per_prompt_sb         # keep first-seed list for Wilcoxon
+        print(f"[DIV] {name:6s} self_bleu {np.mean(sb_means):.3f} ± {np.std(sb_means):.3f} "    # NEW: mean ± std
+              f"distinct_1 {np.mean(d1s):.3f} distinct_2 {np.mean(d2s):.3f}  "
+              f"avg_repeat={np.mean(reps):.5f} ({len(SEEDS)} seeds)")
         del model
         free()
-    if "lora" in sb and "seft" in sb:
-        _, p = wilcoxon(sb["seft"], sb["lora"])         # L2 significance
-        print(f"[DIV] SEFT vs LoRA self_bleu p-value: {p:.4f}")
 
-    tradeoff()                                          # L3
+    if "lora" in sb_seed0 and "seft" in sb_seed0:
+        _, p = wilcoxon(sb_seed0["seft"], sb_seed0["lora"])                  # CHANGED: now on the first-seed lists
+        print(f"[DIV] SEFT vs LoRA self_bleu p-value (seed {SEEDS[0]}): {p:.4f}")
+
+    tradeoff()
