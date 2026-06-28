@@ -6,7 +6,7 @@ from huggingface_hub import login
 
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-from peft import LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
+from peft import LoraConfig, get_peft_model, TaskType, PeftModel
 from trl import SFTTrainer, SFTConfig
 
 
@@ -57,17 +57,6 @@ tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 tokenizer.pad_token    = tokenizer.eos_token
 tokenizer.padding_side = "right"
 
-# if tokenizer.chat_template is None:
-#     tokenizer.chat_template = (
-#         "{% set loop_messages = messages %}"
-#         "{% for message in loop_messages %}"
-#         "{% set content = '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n'+ message['content'] | trim + '<|eot_id|>' %}"
-#         "{{ content }}"
-#         "{% endfor %}"
-#         "{% if add_generation_prompt %}"
-#         "{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}"
-#         "{% endif %}"
-#     )
 
 LLAMA3_GEN_TEMPLATE = (
     "{{ '<|begin_of_text|>' }}"
@@ -90,12 +79,6 @@ train, test = split["train"], split["test"]
 print(train)
 print(test)
 
-# formatted_data = raw_data.map(format_instruction_dataset, remove_columns=raw_data.column_names)
-#
-# print(formatted_data)
-# print(formatted_data[10])
-
-# exit()
 
 
 # bnb_config = BitsAndBytesConfig(
@@ -118,11 +101,6 @@ model = AutoModelForCausalLM.from_pretrained(
 )
 
 model.config.use_cache = False
-
-# lora_config = LoraConfig(
-#     task_type=TaskType.CAUSAL_LM,
-#     target_modules=["q_proj", "k_proj", "v_proj", "o_proj"]
-# )
 
 lora_config = LoraConfig(
     r=16,
@@ -187,5 +165,6 @@ print("training...")
 trainer.train()
 
 
-
-save_instance(trainer.model, tokenizer)
+print("Merging LoRA adapter into base model...")
+merged_model = trainer.model.merge_and_unload()
+save_instance(merged_model, tokenizer)
