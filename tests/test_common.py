@@ -27,12 +27,36 @@ MODELS = ("base", "lora", "lora-q", "seft")                      # the three che
 SEED, TEST_SIZE = 69, 0.1
 
 
-PERSONA_RUBRIC = ("Rate from 1 to 5 how strongly the passage below reads like {persona} "
-          "(1 = no resemblance, 5 = unmistakably {persona}). Reply with only the number.\n\n"
-          "Passage:\n{text}")
+PERSONA_RUBRIC = """You are an expert evaluator assessing how well an AI assistant adopts a specific persona. 
+Target Persona: {persona}
 
-HELP_RUBRIC = ("Rate 1-5 how completely the answer addresses the question (1=ignores it, 5=fully answers). "
-               "Reply with only the number.\n\nQuestion: {question}\nAnswer: {text}")
+Evaluate the passage based on its tone, vocabulary, and style using the following 1-5 scale:
+1 - No resemblance: Sounds like a generic AI. Completely fails to adopt the persona.
+2 - Weak: Attempts the persona, but the tone or style is highly inconsistent and frequently slips.
+3 - Moderate: Captures the basic idea of the persona but lacks depth, nuance, or characteristic phrasing.
+4 - Strong: Highly aligned with the persona. Feels natural, with only very minor or negligible slips.
+5 - Unmistakable: Flawless execution. Embodies the {persona} perfectly without sounding forced.
+
+Reply with ONLY the single integer number (1, 2, 3, 4, or 5). Do not output any other text, reasoning, or tags.
+
+Passage:
+{text}
+"""
+
+HELP_RUBRIC = """You are an expert evaluator assessing the helpfulness of an AI's answer to a user's question.
+
+Evaluate the answer based on accuracy, comprehensiveness, and clarity using the following 1-5 scale:
+1 - Useless: Completely ignores the core question, provides completely irrelevant info, or refuses to answer unnecessarily.
+2 - Poor: Touches on the general topic but misses the main point of the question or leaves the user stuck.
+3 - Adequate: Answers the basic question but is somewhat incomplete, lacks detail, or is slightly confusing.
+4 - Good: Clearly answers the question and provides useful, accurate information. May lack a tiny bit of depth.
+5 - Excellent: Fully resolves the user's intent. The answer is comprehensive, perfectly clear, and highly actionable.
+
+Reply with ONLY the single integer number (1, 2, 3, 4, or 5). Do not output any other text, reasoning, or tags.
+
+Question: {question}
+Answer: {text}
+"""
 
 
 def _path(name):

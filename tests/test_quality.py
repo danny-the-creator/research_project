@@ -48,7 +48,7 @@ def perplexity(n_prompts=500):
 
 
 @torch.no_grad()
-def persona_score(n_prompts=300):
+def persona_score(n_prompts=250):
     """Q4 (persona axis) — average 1-5 persona rating on held-out prompts, per model."""
     prompts, _, _ = get_eval_data(n_prompts)
 
@@ -93,5 +93,5 @@ def helpfulness_score(answers_file="showcase_answers.json"):
 
 if __name__ == "__main__":
     perplexity()
-    persona_score()
     helpfulness_score(SHOWCASE_ANSWERS_PATH)
+    persona_score()
